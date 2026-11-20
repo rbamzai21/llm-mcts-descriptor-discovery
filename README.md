@@ -1,71 +1,136 @@
-# Research: Material Science
+# LLM-MCTS Descriptor Discovery
 
-**Goal**: build a general-purpose LLM-guided MCTS agent for automatic discovery of mathematical descriptors (symbolic descriptor discovery / Collective Variables) in materials science. The workflow is:
+**An LLM-guided Monte Carlo Tree Search agent that discovers interpretable mathematical descriptors for materials science.**
 
-1. Give the LLM a problem description
-2. The LLM proposes candidate formulas (Python function + LaTeX + explanation + etc.)
-3. Evaluate each formula's classification ability on labeled data using decision trees, SVMs, etc.
-4. Feed evaluation results (accuracy, histograms, parity plots) back to the LLM to guide improvement
-5. Use MCTS to systematically explore and optimize the formula space
+An LLM proposes candidate formulas, classifiers score them against labeled data, and MCTS decides which directions to explore next. This lets the search use the scientific knowledge already built into state-of-the-art LLMs while staying anchored to real data.
 
-The aim is to leverage the prior knowledge already embedded in sota LLMs.
+**First benchmark: perovskite stability.** The goal is to rediscover and surpass the tolerance factor τ from [Bartel et al. (2019)](https://doi.org/10.1126/sciadv.aav0693). τ classifies 576 ABX₃ compounds with about 92% accuracy, compared with about 74% for the classical Goldschmidt tolerance factor *t*.
 
-**Immediate target**: reproduce and surpass the perovskite stability tolerance factor τ proposed by Bartel et al. (2019). τ achieves about 92% classification accuracy on 576 ABX₃ compounds, outperforming the classical Goldschmidt tolerance factor t (about 74%). See `bartel2019-new-tolerance-factor.md` for details.
+> Developed by **Rishab Bamzai** as a Machine Learning Research Assistant in **Prof. Haizhao Yang's** group at the **University of Maryland**, mentored by PhD student **Youran Sun**.
+
+---
+
+## Results
+
+| Descriptor | Source | Accuracy (576 ABX₃) |
+|---|---|---|
+| Goldschmidt *t* | Goldschmidt (1926) | ~74% |
+| τ | Bartel et al. (2019) | ~92% |
+| **Best discovered formula** | **This agent** | **_TBD_** |
+
+<!-- When you have a result: put the discovered formula in LaTeX here, along with its accuracy, the LLM model used and the formula budget. Add the parity plot or histogram the agent produced. -->
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Problem description] --> B[LLM proposer]
+    B -->|Python fn + LaTeX + rationale| C[Evaluator]
+    C -->|accuracy, histograms, parity plots| D[MCTS]
+    D -->|select node to expand, UCB1| B
+    C -.->|errors| E[Debugger loop]
+    E -.-> B
+```
+
+1. **Propose.** Given a problem description, the LLM writes candidate descriptors: an executable Python function, a LaTeX expression, and an explanation of the physical reasoning behind it.
+2. **Evaluate.** Each formula is scored by how well it classifies the labeled data, using decision trees, SVMs and similar classifiers.
+3. **Feed back.** Metrics and plots (accuracy, histograms, parity plots) go back to the LLM as text and images, so the next round of proposals improves on the last.
+4. **Search.** MCTS with UCB1 balances refining promising formulas against exploring new ones. This makes the search systematic rather than greedy prompting.
+5. **Recover.** A debugging loop catches formulas that fail to run and asks the LLM to repair them, so one bad formula doesn't waste the search budget.
+
+### Key design choices
+- **Multimodal feedback:** the proposer sees evaluation plots, not just a number, so it can reason about *where* a formula separates classes poorly.
+- **Persistent, resumable state:** every run saves its full search tree, so long or interrupted runs can resume where they stopped.
+- **Config-driven experiments:** [Hydra](https://hydra.cc/) lets you change the budget, model and search parameters from the command line without editing code.
+
+---
 
 ## Setup
 
+Requires [uv](https://docs.astral.sh/uv/).
+
 ```bash
-# Clone with submodules
-git clone --recurse-submodules https://github.com/rbamzai21/research_material_science.git
+# Clone with submodules (includes Bartel et al. data & code)
+git clone --recurse-submodules https://github.com/rbamzai21/llm-mcts-descriptor-discovery.git
+cd llm-mcts-descriptor-discovery
 
 # If already cloned without submodules
 git submodule update --init --recursive
 
-# Python environment (requires uv: https://docs.astral.sh/uv/)
+# Install dependencies
 uv sync --all-extras
 
-# Pre-commit hooks
+# Install pre-commit hooks
 uv run pre-commit install
 ```
 
-## Formula search agent
-
-MCTS-guided LLM agent that proposes, evaluates, and iteratively improves descriptor formulas.
+## Running the search
 
 ```bash
-# Set your OpenAI API key
+# Add your OpenAI API key (.env is gitignored; never commit it)
 echo "OPENAI_API_KEY=sk-..." > .env
 
-# Run the search (default: 50 formula budget, GPT-4.1 Nano)
+# Run the search (default: 50-formula budget, GPT-4.1 Nano)
 uv run python run_search.py
+
+# Override config values
+uv run python run_search.py mcts.budget=100 llm.model=gpt-4o-mini
 
 # Resume an interrupted search
 uv run python run_search.py search.resume=search_runs/<run_name>/search_state.json
-
-# Override config
-uv run python run_search.py mcts.budget=100 llm.model=gpt-4o-mini
 ```
 
-Results are saved under `search_runs/<timestamp>/` with plots and a JSON state file.
+Each run writes its plots and a JSON state file to `search_runs/<timestamp>/`.
+
+## Reproducing the baseline
+
+Before searching, the `reproduce_evidence/` scripts check the pipeline against the published results:
+
+| Script | Reproduces |
+|---|---|
+| `evidence1_abx3_classification.py` | Fig. 2A–C: τ vs. *t* classification on 576 ABX₃ compounds |
+| `evidence2_double_perovskites.py` | τ on ICSD double perovskites |
+| `evidence3_dft_correlation.py` | Fig. 2D: correlation with DFT decomposition energies |
+
+```bash
+uv run python reproduce_evidence/evidence1_abx3_classification.py
+```
+
+---
 
 ## Project structure
 
 ```
-├── perovskite-stability/      # Submodule: Bartel et al. data & code
-├── reproduce_evidence/         # Scripts reproducing paper figures
-│   ├── evidence1_abx3_classification.py   # Fig 2 A, B, C
-│   ├── evidence2_double_perovskites.py    # ICSD double perovskites
-│   └── evidence3_dft_correlation.py       # Fig 2 D
-├── run_search.py               # MCTS formula search entry point
-├── mcts.py                     # MCTS algorithm (UCB1, expand, backprop)
-├── evaluator.py                # Evaluate formulas on 576 ABX3
+├── run_search.py               # Entry point for MCTS formula search
+├── mcts.py                     # MCTS: UCB1 selection, expansion, backpropagation
 ├── proposer.py                 # LLM prompt construction (text + vision)
-├── debugger.py                 # Error recovery loop
+├── evaluator.py                # Scores formulas on the 576 ABX₃ dataset
+├── debugger.py                 # Error-recovery loop for failing formulas
 ├── llm_client.py               # OpenAI API wrapper (text + vision)
-├── state.py                    # Persistent search state
+├── state.py                    # Persistent, resumable search state
 ├── conf/config.yaml            # Hydra configuration
-├── legacy/                     # Previous prototype code
-├── bartel2019-new-tolerance-factor.md
+├── reproduce_evidence/         # Scripts reproducing Bartel et al. figures
+├── perovskite-stability/       # Submodule: Bartel et al. data & code
+├── legacy/                     # Earlier prototype
+├── bartel2019-new-tolerance-factor.md   # Notes on the benchmark paper
 ├── pyproject.toml
 └── .pre-commit-config.yaml
 ```
+
+## Roadmap
+
+- [ ] Beat τ's ~92% accuracy on the ABX₃ benchmark
+- [ ] Compare LLMs (cost vs. quality of discovered formulas)
+- [ ] Extend to other descriptor tasks, such as collective variables
+
+---
+
+## Acknowledgments
+
+This work was done in Prof. Haizhao Yang's research group at the University of Maryland. Thanks to Youran Sun for mentorship throughout the project.
+
+## References
+
+Bartel, C. J., Sutton, C., Goldsmith, B. R., Ouyang, R., Musgrave, C. B., Ghiringhelli, L. M., & Scheffler, M. (2019). New tolerance factor to predict the stability of perovskite oxides and halides. *Science Advances*, 5(2), eaav0693. https://doi.org/10.1126/sciadv.aav0693
